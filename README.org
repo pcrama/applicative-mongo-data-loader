@@ -1,0 +1,5 @@
+#+title:  Applicative Specialized to a MongoDB client for a web application
+#+author: Philippe Crama
+#+date:   2026-10-19
+
+* Introduction

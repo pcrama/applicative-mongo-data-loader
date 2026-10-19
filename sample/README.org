@@ -1,0 +1,9 @@
+Run the app with
+#+begin_src shell :exports code
+  uv run -m fastapi sample.src.main
+#+end_src
+
+Test the app with
+#+begin_src shell :exports code
+  uv run ty check && uv run -m pytest
+#+end_src
