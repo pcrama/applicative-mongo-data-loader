@@ -19,6 +19,7 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
+testpaths=["sample/tests"]
 filterwarnings = [
   "ignore:.*general_plain_validator_function.*:DeprecationWarning:bunnet\\.odm\\.fields",
 ]

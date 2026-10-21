@@ -1,50 +1,83 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Request
-from sample.src.models import Organization, User, NoteFolder, Note
-from sample.src.schemas import FolderCreate, FolderOut, NoteCreate, NoteOut
-from sample.src.auth import get_current_user, require_role
+from bson import ObjectId
+from fastapi import APIRouter, Depends, HTTPException, status, Request, Response
+from .models import User, NoteFolder, Note
+from .schemas import FolderCreate, NoteCreate
+from . import auth, db
 
 router = APIRouter(prefix="/sample/v1")
 
+
 @router.post("/folders/", status_code=201)
-async def create_folder(folder: FolderCreate, user: User = Depends(get_current_user)):
-    # Check org exists
-    org = Organization.find_one(Organization.id == folder.organization_id)
-    if not org:
-        raise HTTPException(status_code=403, detail="Organization does not exist")
-    if not require_role(folder.organization_id, user.roles, write=True):
-        raise HTTPException(status_code=403, detail="No write rights to organization")
+def post_folder(folder: FolderCreate, request: Request):
+    auth.require_role_by_organization_id(
+        folder.organization_id, request, auth.Operation.WRITE
+    )
+    parent = db.get_note_folder(folder.parent_id) if folder.parent_id else None
     if folder.parent_id:
-        parent = NoteFolder.find_one(NoteFolder.id == folder.parent_id)
         if not parent:
             raise HTTPException(status_code=422, detail="Parent folder does not exist")
         if parent.organization_id != folder.organization_id:
-            raise HTTPException(status_code=422, detail="Parent and child organization mismatch")
-    doc = NoteFolder.model_validate(folder.model_dump())
-    doc.insert()
-    return {"location": f"/sample/v1/folders/{doc.id}"}
+            raise HTTPException(
+                status_code=422, detail="Parent and child organization mismatch"
+            )
+    org = db.get_organization(folder.organization_id)
+    if (
+        not org
+    ):  # admin gets a 422, other users don't get here, and already received a 403
+        raise HTTPException(status_code=422, detail="Organization does not exist")
+    doc = db.create_folder(folder.name, org, parent if folder.parent_id else None)
 
-@router.get("/folders/{id}", response_model=FolderOut)
-async def get_folder(id: str, user: User = Depends(get_current_user)):
-    folder = NoteFolder.find_one(NoteFolder.id == id)
-    if not folder:
-        raise HTTPException(status_code=404, detail="Folder not found")
-    org = Organization.find_one(Organization.id == folder.organization_id)
-    if not org:
-        raise HTTPException(status_code=403, detail="Organization does not exist")
-    if not require_role(folder.organization_id, user.roles, write=False):
-        raise HTTPException(status_code=403, detail="No read rights to organization")
-    return folder
+    return Response(
+        status_code=status.HTTP_201_CREATED,
+        headers={"Location": f"/sample/v1/folders/{doc.id}"},
+    )
+
+
+@router.get("/folders/{folder_id}", response_model=NoteFolder)
+def get_folder(folder_id: str, request: Request) -> NoteFolder:
+    auth.require_role_by_folder_id(folder_id, request, auth.Operation.READ)
+    folder = db.get_note_folder(folder_id)
+    if folder:
+        return folder
+
+    # admin gets a 404, other users don't get here, and already received a 403
+    raise HTTPException(status_code=404, detail="Folder not found")
+
 
 @router.post("/folders/{folder_id}/notes/", status_code=201)
-async def create_note(folder_id: str, note: NoteCreate, user: User = Depends(get_current_user)):
-    folder = NoteFolder.find_one(NoteFolder.id == folder_id)
+def create_note(folder_id: str, note: NoteCreate, request: Request):
+    auth.require_role_by_folder_id(folder_id, request, auth.Operation.WRITE)
+    folder = db.get_note_folder(folder_id)
     if not folder:
-        raise HTTPException(status_code=404, detail="Folder not found")
-    org = Organization.find_one(Organization.id == folder.organization_id)
-    if not org:
-        raise HTTPException(status_code=403, detail="Organization does not exist")
-    if not require_role(folder.organization_id, user.roles, write=True):
-        raise HTTPException(status_code=403, detail="No write rights to organization")
-    doc = Note.model_validate(note.model_dump() | {"creator_email": user.email})
-    doc.insert()
-    return {"location": f"/sample/v1/folders/{folder_id}/notes/{doc.id}"}
+        # admin gets a 422, other users don't get here, and already received a 403
+        raise HTTPException(status_code=422, detail="Folder not found")
+    doc = db.create_note(
+        folder, note.title, note.content, auth.get_current_user(request).email
+    )
+    return Response(
+        status_code=status.HTTP_201_CREATED,
+        headers={"Location": f"/sample/v1/folders/{folder_id}/notes/{doc.id}"},
+    )
+
+
+@router.post("/notes/{note_id}/like", status_code=200, response_model=Note)
+def like_note(note_id: str, request: Request):
+    auth.require_role_by_note_id(note_id, request, auth.Operation.WRITE)
+    note = db.like_note(note_id)
+    if note:
+        return note
+
+    # admin gets a 404, other users don't get here, and already received a 403
+    raise HTTPException(status_code=404, detail="Note not found")
+
+
+@router.get(
+    "/folders/{folder_id}/notes/{note_id}", status_code=200, response_model=Note
+)
+def get_note(folder_id: str, note_id: str, request: Request):
+    auth.require_role_by_note_id(note_id, request, auth.Operation.READ)
+    note = db.get_note(note_id)
+    if note and note.folder_id == folder_id and db.get_note_folder(folder_id):
+        return note
+
+    raise HTTPException(status_code=404, detail="Note not found")

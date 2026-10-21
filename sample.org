@@ -1,0 +1,66 @@
+See @pyproject.toml for available dependencies.
+
+REST API to manage notes: create a note, get a note and like notes. The notes belong to users that belong to organizations. There is fine-grained access control implemented in the app. The data is stored in a Mongo DB.
+
+Data model (as bunnet class definitions):
+
+#+begin_src python :exports code
+  from typing import Annotated
+  from bunnet import Document
+  from pydantic import BaseModel, Field
+
+
+  class Organization(Document):
+      name: str
+
+
+  class User(Document):
+      name: str
+      email: Annotated[str, Field(description="login identifier")]
+      roles: Annotated[list[str], Field(description="""Fine-grained access control. Each elemens is one of
+      - 'admin' :: human with read/write rights on anything
+      - 'viewer::<id>' :: read-access to all documents inside folders belonging to Organization with that id
+      - 'editor::<id>' :: read/write-access to all documents inside folders belonging to Organization with that id""", default_factory=list)]
+
+
+  class NoteFolder(Document):
+      name: Annotated[str, Field(description="Name of the folder, does not need to be unique")]
+      parent_id: Annotated[str | None, Field(description="Notes can be placed arbitrarily deep in a nested tree structure")]
+      organization_id: Annotated[str, Field(description="""id of the Organization the NoteFolder belongs to.
+      The invariant that a tree can belong to only one organization is maintained by the application, i.e.
+      child_note_folder.organization_id == child_note_folder.parent.organization_id""")]
+
+
+  class Note(Document):
+      title: str
+      content: str
+      creator_email: Annotated[str, Field(description(="Creator's email"))]
+      folder_id: Annotated[str, Field(description="Each note is inside a folder and belongs to the organization the folder belongs to")]
+      likes: Annotated[int, Field(description="Users can vote on notes via separate end-point, this field is not part of the POST"), default=0]
+#+end_src
+
+Create a twelve-factor app in sample/src/ with unit tests in sample/tests/, running against a local mongo database (see @sample/docker-compose.yaml file) using fastapi, bunnet with these endpoints:
+
+- =POST /sample/v1/folders/=
+  - body :: ={"name": "My root folder", "organization_id": "aa00bb11"} or {"name": "My child folder", "parent_id": "ff99ee88", "organization_id", "aa00bb11"}=
+  - returns:
+    - 201 with location of new folder (e.g. =/sample/v1/folders/ff99ee88=), if user has write rights to the organization ("admin" or "editor::aa00bb11"), the organization exists, and in the case of the child folder, if the parent folder exists and belongs to the same organization
+    - 401 if not authenticated
+    - 403 if authenticated, but user has no write rights to the organization or the organization doesn't exist
+    - 422 if parent organization and child organization don't match
+
+- =GET /sample/v1/folders/<id>= returns
+  - 200 with document body ={"_id": "ff99ee88", "name": "My root folder", "organization_id": "aa00bb11"}= or ={"_id": "11223344", "name": "My child folder", "organization_id": "aa00bb11", "parent_id": "ff99ee88"}=
+  - 401 if not authenticated
+  - 403 if authenticated, but user has no read rights to the organization or the organization doesn't exist
+  - 404 if folder doesn't exist
+
+- =POST /sample/v1/folders/<folder-id>/notes/=
+  - body :: ={"title": "My note in a root folder", "content": "root content", "folder_id": "ff99ee88"}= or ={"title": "My note in a child folder", "parent_id": "ff99ee88", "organization_id", "aa00bb11"}=
+  - returns:
+    - 201 with location of new note (e.g. =/sample/v1/folders/ff99ee88/notes/000aaa=), if the folder exists, the user has write rights to the organization ("admin" or "editor::aa00bb11") the folder belongs to, the organization exists
+    - 401 if not authenticated
+    - 403 if authenticated, but user has no write rights to the organization or the organization doesn't exist
+    - 404 if folder doesn't exist
+
+Initialize sentry_sdk for logging in the spotlight container.

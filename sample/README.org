@@ -1,9 +1,21 @@
+* Introduction
+
+This sample is a FastAPI REST API for managing notes stored in MongoDB. Notes
+are organized into folders that belong to organizations, and user roles
+control access to organization data. It demonstrates how this project's
+MongoDB data-loading approach can be used in a web application.
+
 Run the app with
 #+begin_src shell :exports code
-  uv run -m fastapi sample.src.main
+  SENTRY_SPOTLIGHT=1 uv run --directory sample -m fastapi run src/main.py --reload
 #+end_src
 
 Test the app with
 #+begin_src shell :exports code
   uv run ty check && uv run -m pytest
+#+end_src
+
+Integration test:
+#+begin_src shell :exports code
+  uv run --directory sample -- python -m tools.integration_test
 #+end_src

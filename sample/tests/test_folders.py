@@ -1,9 +1,10 @@
+from bson import ObjectId
 import pytest
 from fastapi.testclient import TestClient
 
-from sample.src.auth import get_current_user
+from sample.src import auth
 from sample.src.main import app
-from sample.src.models import NoteFolder, Organization
+from sample.src.models import NoteFolder, Organization, User
 
 
 @pytest.fixture
@@ -21,29 +22,35 @@ def test_create_folder_unauthenticated(client):
     assert resp.status_code == 401
 
 
-def test_create_folder_authenticated(client, monkeypatch):
-    def fake_user():
-        from sample.src.models import User
-        return User(name="admin", email="admin@test", roles=["admin"])
+def test_create_folder_authenticated_as_admin(client: TestClient, monkeypatch) -> None:
+    def fake_find_one_user(_query):
+        class Query:
+            def run(self):
+                return User(name="admin", email="admin@test", roles=["admin"])
 
-    def fake_find_one(query):
-        class Org:
-            id = "org1"
-            name = "Org1"
+        return Query()
 
-        return Org()
+    def fake_find_one(_query):
+        class Query:
+            def run(self):
+                return Organization(
+                    name="Org1", _id=ObjectId("0123456789abcdef01234567")
+                )
+
+        return Query()
 
     def fake_insert(self):
+        self.id = ObjectId("1234567890abcdef12345678")
         return self
 
-    # Override the exact dependency object used by the route.
-    monkeypatch.setitem(app.dependency_overrides, get_current_user, fake_user)
     monkeypatch.setattr(Organization, "find_one", fake_find_one)
     monkeypatch.setattr(NoteFolder, "insert", fake_insert)
+    monkeypatch.setattr(User, "find_one", fake_find_one_user)
 
     resp = client.post(
         "/sample/v1/folders/",
-        json={"name": "Root", "organization_id": "org1"},
+        json={"name": "Root", "organization_id": "0123456789abcdef01234567"},
+        headers={"X-User": "admin"},
     )
     assert resp.status_code == 201
-    assert "location" in resp.json()
+    assert resp.headers["location"] == "/sample/v1/folders/1234567890abcdef12345678"
