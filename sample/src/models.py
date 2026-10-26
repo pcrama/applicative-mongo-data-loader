@@ -1,6 +1,6 @@
-from typing import Annotated, Optional
+from typing import Annotated
 from bunnet import Document
-from pydantic import BaseModel, Field
+from pydantic import Field
 
 
 class Organization(Document):
@@ -27,7 +27,7 @@ class NoteFolder(Document):
         str, Field(description="Name of the folder, does not need to be unique")
     ]
     parent_id: Annotated[
-        Optional[str],
+        str | None,
         Field(
             description="Notes can be placed arbitrarily deep in a nested tree structure"
         ),

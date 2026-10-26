@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException, status, Request, Response
-from ..models import NoteFolder, Note
+from ..models import NoteFolder, Note, Organization
 from ..schemas import FolderCreate, NoteCreate
 from .. import db
 from . import functional_auth
@@ -7,34 +7,58 @@ from . import functional_auth
 router = APIRouter(prefix="/sample/v2")
 
 
+def functional_post_folder(
+    auth_result: HTTPException | Organization | None,
+    folder: FolderCreate,
+    parent: NoteFolder | None,
+) -> NoteFolder:
+    # No database access here
+    if isinstance(auth_result, HTTPException):
+        raise auth_result
+    if auth_result is None:
+        # admin gets a 422, other users don't get here, and already received a 403
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Organization does not exist",
+        )
+
+    if folder.parent_id:
+        if not parent:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Parent folder does not exist",
+            )
+        if parent.organization_id != folder.organization_id:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Parent and child organization mismatch",
+            )
+    return NoteFolder(
+        name=folder.name,
+        organization_id=str(auth_result.id),
+        parent_id=None if parent is None else str(parent.id),
+    )
+
+
 @router.post("/folders/", status_code=201)
 def post_folder(folder: FolderCreate, request: Request):
     auth_result = functional_auth.require_role_by_organization_id(
         folder.organization_id, request, functional_auth.Operation.WRITE
     )
-    if isinstance(auth_result, HTTPException):
-        raise auth_result
-
     org = (
-        db.get_organization(folder.organization_id)
-        if (auth_result[1] is functional_auth.NoDatabaseAccessNeeded.SENTINEL)
-        else auth_result[1]
+        auth_result
+        if isinstance(auth_result, HTTPException)
+        else (
+            db.get_organization(folder.organization_id)
+            if (auth_result[1] is functional_auth.NoDatabaseAccessNeeded.SENTINEL)
+            else auth_result[1]
+        )
     )
-    if (
-        org is None
-    ):  # admin gets a 422, other users don't get here, and already received a 403
-        raise HTTPException(status_code=422, detail="Organization does not exist")
+    parent = None if folder.parent_id is None else db.get_note_folder(folder.parent_id)
 
-    parent = db.get_note_folder(folder.parent_id) if folder.parent_id else None
-    if folder.parent_id:
-        if not parent:
-            raise HTTPException(status_code=422, detail="Parent folder does not exist")
-        if parent.organization_id != folder.organization_id:
-            raise HTTPException(
-                status_code=422, detail="Parent and child organization mismatch"
-            )
+    doc = functional_post_folder(org, folder, parent)
 
-    doc = db.create_folder(folder.name, org, parent if folder.parent_id else None)
+    doc.insert()
 
     return Response(
         status_code=status.HTTP_201_CREATED,
@@ -60,7 +84,9 @@ def get_folder(folder_id: str, request: Request) -> NoteFolder:
         return folder
 
     # admin gets a 404, other users don't get here, and already received a 403
-    raise HTTPException(status_code=404, detail="Folder not found")
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND, detail="Folder not found"
+    )
 
 
 @router.post("/folders/{folder_id}/notes/", status_code=201)
@@ -79,7 +105,9 @@ def create_note(folder_id: str, note: NoteCreate, request: Request):
 
     if not folder:
         # admin gets a 422, other users don't get here, and already received a 403
-        raise HTTPException(status_code=422, detail="Folder not found")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Folder not found"
+        )
     doc = db.create_note(
         folder,
         note.title,
@@ -105,7 +133,7 @@ def like_note(note_id: str, request: Request):
         return note
 
     # admin gets a 404, other users don't get here, and already received a 403
-    raise HTTPException(status_code=404, detail="Note not found")
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Note not found")
 
 
 @router.get(
@@ -132,4 +160,4 @@ def get_note(folder_id: str, note_id: str, request: Request):
         if folder:
             return note
 
-    raise HTTPException(status_code=404, detail="Note not found")
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Note not found")
