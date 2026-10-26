@@ -1,3 +1,5 @@
+from bson import ObjectId
+from mongoloader import your_turn
 from fastapi import APIRouter, HTTPException, status, Request, Response
 from ..models import NoteFolder, Note, Organization
 from ..schemas import FolderCreate, NoteCreate
@@ -45,16 +47,28 @@ def post_folder(folder: FolderCreate, request: Request):
     auth_result = functional_auth.require_role_by_organization_id(
         folder.organization_id, request, functional_auth.Operation.WRITE
     )
-    org = (
-        auth_result
-        if isinstance(auth_result, HTTPException)
-        else (
-            db.get_organization(folder.organization_id)
-            if (auth_result[1] is functional_auth.NoDatabaseAccessNeeded.SENTINEL)
-            else auth_result[1]
+    if folder.parent_id is None:
+        org = (
+            auth_result
+            if isinstance(auth_result, HTTPException)
+            else (
+                db.get_organization(folder.organization_id)
+                if (auth_result[1] is functional_auth.NoDatabaseAccessNeeded.SENTINEL)
+                else auth_result[1]
+            )
         )
-    )
-    parent = None if folder.parent_id is None else db.get_note_folder(folder.parent_id)
+    else:
+        rr = your_turn(
+            {
+                "org": (
+                    Organization,
+                    Organization.id == ObjectId(folder.organization_id),
+                ),
+                "parent": (NoteFolder, NoteFolder.id == ObjectId(folder.parent_id)),
+            }
+        )
+        org = rr["org"]
+        parent = rr["parent"]
 
     doc = functional_post_folder(org, folder, parent)
 

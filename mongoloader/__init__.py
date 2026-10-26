@@ -2,12 +2,11 @@ from typing import Any, Protocol
 
 from bunnet import Document
 
-class ApplicativeMongoLoader[T](Protocol):
-    def execute(self) -> T | None:
-        ...
 
-    def mongo_query(self) -> dict[str, Any]:
-        ...
+class ApplicativeMongoLoader[T](Protocol):
+    def execute(self) -> T | None: ...
+
+    def mongo_query(self) -> dict[str, Any]: ...
 
 
 class FindOne[T: Document](ApplicativeMongoLoader[T]):
@@ -22,7 +21,9 @@ class FindOne[T: Document](ApplicativeMongoLoader[T]):
         return self.filter
 
 
-class FindTuple[T: ApplicativeMongoLoader, U: ApplicativeMongoLoader](ApplicativeMongoLoader[tuple[T | None, U | None]]):
+class FindTuple[T: ApplicativeMongoLoader, U: ApplicativeMongoLoader](
+    ApplicativeMongoLoader[tuple[T | None, U | None]]
+):
     def __init__(self, lft: T, rgt: U):
         self.lft = lft
         self.rgt = rgt
@@ -36,13 +37,45 @@ class FindTuple[T: ApplicativeMongoLoader, U: ApplicativeMongoLoader](Applicativ
             return None
         return (lft_result, rgt_result)
 
+
 def ap_tuple[T, U](lft: FindOne[T], rgt: FindOne[U]) -> FindOne[tuple[T, U]]:
     return (lft.execute(), rgt.execute())
 
 
+def make_pipeline(
+    queries: dict[str, FindOne[Document]],
+) -> tuple[type[Document], list[dict[str, Any]]] | None:
+    def match_limit_project(key: str, fo: FindOne[Document]) -> list[dict[str, Any]]:
+        return [
+            {"$match": fo.collection.find_one(fo.filter).get_filter_query()},
+            {"$limit": 1},
+            {"$project": {"kind": {"$literal": key}, "doc": "$$ROOT"}},
+        ]
 
-def your_turn(queries: dict[str, tuple[type[Document], Any]]) -> dict[str, Document | None]:
-    all= list(queries.items())
+    if not queries:
+        return None
+
+    qs = iter(queries.items())
+    key, first_fo = next(qs)
+    result = match_limit_project(key, first_fo)
+    while (key_and_fo := next(qs, None)) is not None:
+        key, fo = key_and_fo
+        result.append(
+            {
+                "$unionWith": {
+                    "coll": fo.collection.get_motor_collection().name,
+                    "pipeline": match_limit_project(key, fo),
+                }
+            }
+        )
+
+    return first_fo.collection, result
+
+
+def your_turn(
+    queries: dict[str, tuple[type[Document], Any]],
+) -> dict[str, Document | None]:
+    all = list(queries.items())
 
     pipeline = [
         {"$match": all[0][1][0].find_one(all[0][1][1]).get_filter_query()},
