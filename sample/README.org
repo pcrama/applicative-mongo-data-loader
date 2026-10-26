@@ -19,3 +19,9 @@ Integration test:
 #+begin_src shell :exports code
   uv run --directory sample -- python -m tools.integration_test
 #+end_src
+
+** Implementation notes
+*** =/sample/v1/= "naïve" implementation
+*** =/sample/v2/= functional core, imperative shell
+Refactor to go for controllers written as 1 or 2 pure functions with
+side-effects (calling DB) well separated.

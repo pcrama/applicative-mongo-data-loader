@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from pymongo import MongoClient
 
 from .models import Note, NoteFolder, Organization, User
+from .imperative_shell import functional_routes
 from .routes import router
 from .settings import settings
 
@@ -28,3 +29,4 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 app.include_router(router)
+app.include_router(functional_routes.router)

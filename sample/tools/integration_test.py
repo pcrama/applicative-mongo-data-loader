@@ -564,3 +564,4 @@ def test_all(base_url: str, sample_docs: SampleDocuments) -> None:
 if __name__ == "__main__":
     sample_docs = setup()
     test_all("http://localhost:8000/sample/v1/", sample_docs)
+    test_all("http://localhost:8000/sample/v2/", sample_docs)
