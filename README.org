@@ -3,3 +3,14 @@
 #+date:   2026-10-19
 
 * Introduction
+
+* Design
+
+Inspired by Haskell's ~Functor~ and ~Applicative~ (and ~Monad~, but not going all the way) and operators.
+
+** Haskell ~Functor~ ≈ Python ~Functor~
+
+#+begin_src python :exports src
+  class Functor[T](Protocol):
+      def fmap[U](self, f: Callable[[T], U]) -> Functor[U]: ...
+#+end_src
