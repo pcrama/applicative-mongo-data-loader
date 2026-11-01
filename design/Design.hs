@@ -71,10 +71,22 @@ compileMongoFilter a@MongoNever = show $ compileSimpleMongoFilter a
 instance Show (MongoFilter x Bool) where
   show = compileMongoFilter
 
-data Query d = Query
-  { query :: MongoFilter 'Compound Bool -- ^ for demo purposes, some representation of possible queries
-  , example_result :: d -- ^ for demo purposes, so that I can "run" some code without talking to a real mongo
-  } deriving (Show)
+data QueryType = Single | Many
+
+data SingletonQueryType (qt :: QueryType) where
+  SSingle :: SingletonQueryType 'Single
+  SMany   :: SingletonQueryType 'Many
+
+instance Show (SingletonQueryType qt) where
+  show SSingle = "Single"
+  show SMany   = "Many"
+
+data Query (qt :: QueryType) d = Query
+  { query          :: MongoFilter 'Compound Bool
+  , example_result :: d
+  , query_type     :: SingletonQueryType qt
+  }
+  deriving (Show)
 
 newtype Document d = Document d
   deriving (Show, Eq, Ord)
@@ -84,7 +96,8 @@ data Request = Req Type Type
 
 -- | The return types corresponding to a list of queries.
 type family FindOneResult (r :: Request) :: Type where
-  FindOneResult ('Req (Document _) (Query q)) = Maybe q
+  FindOneResult ('Req (Document _) (Query Single q)) = Maybe q
+  FindOneResult ('Req (Document _) (Query Many q)) = [q]
 
 type family FindOneResults (xs :: [Request]) :: [Type] where
   FindOneResults '[]       = '[]
@@ -95,24 +108,24 @@ data HList (xs :: [Type]) where
   HCons :: x -> HList (y ': ys) -> HList (x ': y ': ys)
 
 data FindOneQueries (xs :: [Request]) where
-  FOQOne :: Document d -> Query q -> FindOneQueries '[ 'Req (Document d) (Query q) ]
+  FOQOne :: Document d -> Query t q -> FindOneQueries '[ 'Req (Document d) (Query t q) ]
   FOQCons
     :: Document d
-    -> Query q
+    -> Query t q
     -> FindOneQueries (x ': xs)
-    -> FindOneQueries ('Req (Document d) (Query q) ': x ': xs)
+    -> FindOneQueries ('Req (Document d) (Query t q) ': x ': xs)
 
 deriving instance (Show d, Show q)
-  => Show (FindOneQueries '[ 'Req (Document d) (Query q)])
+  => Show (FindOneQueries '[ 'Req (Document d) (Query t q)])
 
 deriving instance (Show d, Show q, Show (FindOneQueries (x ': xs)))
-  => Show (FindOneQueries ('Req (Document d) (Query q) ': x ': xs))
+  => Show (FindOneQueries ('Req (Document d) (Query t q) ': x ': xs))
 
 data MongoLoader a where
   -- | No round-trip to Mongo needed, just return the value
   Pure :: a -> MongoLoader a
   -- | Combination of queries in 1+ collections, each query returning 0-1 documents.
-  Query1
+  Roundtrip
     :: FindOneQueries xs
     -> (HList (FindOneResults xs) -> a)
     -> MongoLoader a
@@ -121,7 +134,7 @@ data MongoLoader a where
 
 instance Functor MongoLoader where
   fmap f (Pure x) = Pure $ f x
-  fmap f ml@(Query1 _ _) = PostProcessed ml f
+  fmap f ml@(Roundtrip _ _) = PostProcessed ml f
   fmap f (PostProcessed ml e) = PostProcessed ml (f . e)
 
 class (Functor a) => Apply a where
@@ -136,25 +149,25 @@ class (Apply a) => Mult a where
 instance Mult MongoLoader where
   (Pure a) `mult` (Pure b) =
     Pure (a, b)
-  (Pure a) `mult` (Query1 queries pp) =
-    Query1 queries $ (a,) . pp
+  (Pure a) `mult` (Roundtrip queries pp) =
+    Roundtrip queries $ (a,) . pp
   (Pure a) `mult` (PostProcessed ml pp) =
     PostProcessed ml $ (a,) . pp
-  (Query1 queries pp) `mult` (Pure b) =
-    Query1 queries $ (,b) . pp
-  (Query1 lft_queries lft_pp) `mult` (Query1 rgt_queries rgt_pp) =
-    Query1 (appendQueries lft_queries rgt_queries) $ \results ->
+  (Roundtrip queries pp) `mult` (Pure b) =
+    Roundtrip queries $ (,b) . pp
+  (Roundtrip lft_queries lft_pp) `mult` (Roundtrip rgt_queries rgt_pp) =
+    Roundtrip (appendQueries lft_queries rgt_queries) $ \results ->
       case appendResultsProof lft_queries rgt_queries of
         Refl ->
           case splitResults lft_queries rgt_queries results of
             (lft_results, rgt_results) ->
               (lft_pp lft_results, rgt_pp rgt_results)
-  lft@(Query1 _ _) `mult` (PostProcessed ml rgt_pp) =
+  lft@(Roundtrip _ _) `mult` (PostProcessed ml rgt_pp) =
     PostProcessed (lft `mult` ml)
                 $ \(lft, rgt) -> (lft, rgt_pp rgt)
   (PostProcessed ml pp) `mult` (Pure rgt) =
     PostProcessed ml $ (, rgt) . pp
-  (PostProcessed ml lft_pp) `mult` rgt@(Query1 _ _) =
+  (PostProcessed ml lft_pp) `mult` rgt@(Roundtrip _ _) =
     PostProcessed (ml `mult` rgt)
                 $ \(lft, rgt) -> (lft_pp lft, rgt)
   (PostProcessed lft_ml lft_pp) `mult` (PostProcessed rgt_ml rgt_pp) =
@@ -165,14 +178,16 @@ multAp f x = (\(ff, xx) -> ff xx) <$> (f `mult` x)
 
 evalMongoLoader :: MongoLoader a -> (String, a)
 evalMongoLoader (Pure a) = ("pure", a)
-evalMongoLoader (Query1 queries pp) = ("Query1", pp $ produceValues queries)
+evalMongoLoader (Roundtrip queries pp) = ("Roundtrip", pp $ produceValues queries)
 evalMongoLoader (PostProcessed ml pp) =
   let (internalDescription, values) = evalMongoLoader ml
   in ("PostProcessed(" <> internalDescription <> ")", pp values)
 
 produceValues :: FindOneQueries xs -> HList (FindOneResults xs)
-produceValues (FOQOne _ (Query _ d)) = HOne $ Just d
-produceValues (FOQCons _ (Query _ d) tl) = HCons (Just d) $ produceValues tl
+produceValues (FOQOne _ (Query _ d SSingle)) = HOne $ Just d
+produceValues (FOQOne _ (Query _ d SMany)) = HOne [d]
+produceValues (FOQCons _ (Query _ d SSingle) tl) = HCons (Just d) $ produceValues tl
+produceValues (FOQCons _ (Query _ d SMany) tl) = HCons [d] $ produceValues tl
 
 appendQueries
   :: FindOneQueries xs
@@ -208,37 +223,38 @@ splitResults (FOQCons _ _ xs) ys (HCons x rest) =
   case splitResults xs ys rest of
     (left, right) -> (HCons x left, right)
 
--- mkQuery
---   :: forall d. Document d
---   -> String
---   -> MongoLoader (HList '[Maybe d])
--- mkQuery doc s =
---   Query1 (FOQOne doc (Query s :: Query d)) id
-
-mkQuery
+mkQuery1
   :: forall d. Document d
   -> (MongoFilter 'Compound Bool)
   -> MongoLoader (Maybe d)
-mkQuery d@(Document doc) q = Query1 (FOQOne d (Query q doc)) pick
+mkQuery1 d@(Document doc) q = Roundtrip (FOQOne d (Query q doc SSingle)) pick
   where pick :: HList '[Maybe d] -> Maybe d
+        pick (HOne x) = x
+
+mkQueryMany
+  :: forall d. Document d
+  -> (MongoFilter 'Compound Bool)
+  -> MongoLoader [d]
+mkQueryMany d@(Document doc) q = Roundtrip (FOQOne d (Query q doc SMany)) pick
+  where pick :: HList '[[d]] -> [d]
         pick (HOne x) = x
 
 main :: IO ()
 main = do
   let x = pureM (3 :: Int)
-  let y = mkQuery (Document [("user_id", Just "t@example.com"), ("account_id", Nothing)])
-                  (MongoAnd [(StrAttributeEquality "user_id" "t@example.com")])
-  let z = mkQuery (Document [("pi", 3.14 :: Double), ("e", 2.72), ("i^2", -1)])
-                  (MongoAnd [(NumAttributeEquality "pi" 3.14)])
+  let y = mkQuery1 (Document [("user_id", Just "t@example.com"), ("account_id", Nothing)])
+                   (MongoAnd [(StrAttributeEquality "user_id" "t@example.com")])
+  let z = mkQuery1 (Document [("pi", 3.14 :: Double), ("e", 2.72), ("i^2", -1)])
+                   (MongoAnd [(NumAttributeEquality "pi" 3.14)])
   putStrLn . show $ evalMongoLoader x
   putStrLn . show $ evalMongoLoader $ x `mult` y
   putStrLn . show $ evalMongoLoader $ y `mult` ((*3) <$> x) `mult` ((map ((+1) <$>) <$>) <$> z)
-  let user uid = mkQuery (Document [("user_id", "t@example.com"), ("account_id", "aaaa")])
-                         (MongoAnd [(StrAttributeEquality "user_id" uid)])
-  let folder fid aid = mkQuery (Document ["folder_id", fid, "name", "some folder", "account_id", aid])
-                               (MongoAnd [(StrAttributeEquality "folder_id" fid)])
-  let note fid note_id = mkQuery (Document [("folder_id", fid), ("note_id", note_id), ("title", "A title")])
-                                 (MongoAnd [(StrAttributeEquality "folder_id" fid), (StrAttributeEquality "note_id" note_id)])
+  let user uid = mkQuery1 (Document [("user_id", "t@example.com"), ("account_id", "aaaa")])
+                          (MongoAnd [(StrAttributeEquality "user_id" uid)])
+  let folder fid aid = mkQuery1 (Document ["folder_id", fid, "name", "some folder", "account_id", aid])
+                                (MongoAnd [(StrAttributeEquality "folder_id" fid)])
+  let note fid note_id = mkQuery1 (Document [("folder_id", fid), ("note_id", note_id), ("title", "A title")])
+                                  (MongoAnd [(StrAttributeEquality "folder_id" fid), (StrAttributeEquality "note_id" note_id)])
   let validateUserForFolder fid = (pureM checkUserHasAccessToFolder `multAp` user "s@test.com" `multAp` folder "ffff" fid)
   let getNote fid = (getNoteIfUserHasAccess <$> validateUserForFolder fid) `multAp` note fid "666000"
   putStrLn . show $ evalMongoLoader (pureM checkUserHasAccessToFolder `multAp` user "s@test.com" `multAp` folder "ffff" "aaaa")
